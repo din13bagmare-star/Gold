@@ -26,7 +26,8 @@
     box-sizing: border-box;
   }
 
-  html, body {
+  html,
+  body {
     margin: 0;
     padding: 0;
     background: var(--bg);
@@ -465,7 +466,7 @@
       <button type="button" class="btn-outline" id="clearKeyBtn" onclick="handleClearKey()">Clear</button>
     </div>
     <div class="muted-note">
-      Restrict your Gemini API key in Google AI Studio / Cloud Console to your GitHub Pages domain (e.g., <code>https://din13bagmare-star.github.io/*</code>) and Gemini API only.
+      Restrict your Gemini API key in Google AI Studio / Cloud Console to your GitHub Pages domain (e.g., <code>[https://din13bagmare-star.github.io/](https://din13bagmare-star.github.io/)*</code>) and Gemini API only.
     </div>
   </section>
 
@@ -611,10 +612,12 @@
   const TROY_OZ_TO_GRAMS = 31.1034768;
   const DEFAULT_GST_RATE = 0.03;
 
-  const PREFERRED_SEARCH_MODELS = [
-    "gemini-3.8-flash",
-    "gemini-3.6-flash",
+  const PREFERRED_MODELS = [
+    "gemini-2.5-flash",
+    "gemini-2.5-flash-lite",
     "gemini-3.5-flash-lite",
+    "gemini-3.6-flash",
+    "gemini-3.8-flash",
     "gemini-4-hydrogen",
     "gemini-4-argon"
   ];
@@ -676,22 +679,16 @@
   function isExcludedModelId(modelId) {
     const id = String(modelId || "").toLowerCase();
     if (!id) return true;
-    const blocked = ["tts", "audio", "image", "imagen", "veo", "live", "transcribe", "embedding", "aqa"];
+    const blocked = ["tts", "audio", "image", "imagen", "veo", "live", "transcribe", "embedding", "aqa", "gemma"];
     return blocked.some(function (tok) {
       return id.indexOf(tok) !== -1;
     });
   }
 
-  function isCandidateSearchModel(modelId) {
+  function isCandidateGeminiModel(modelId) {
     const id = String(modelId || "").toLowerCase();
     if (isExcludedModelId(id)) return false;
-    return (
-      id.indexOf("gemini-3.8") !== -1 ||
-      id.indexOf("gemini-3.6") !== -1 ||
-      id.indexOf("gemini-3.5") !== -1 ||
-      id.indexOf("gemini-4") !== -1 ||
-      id.indexOf("gemini-3") !== -1
-    );
+    return id.indexOf("gemini") !== -1;
   }
 
   function parseLooseJson(text) {
@@ -711,6 +708,36 @@
       }
       throw new Error("Model output was not valid JSON:\n" + trimmed.slice(0, 600));
     }
+  }
+
+  function toYmdInTimeZone(dateObj, timeZone) {
+    try {
+      const parts = new Intl.DateTimeFormat("en-CA", {
+        timeZone: timeZone,
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit"
+      }).formatToParts(dateObj);
+      const map = {};
+      for (let i = 0; i < parts.length; i++) {
+        map[parts[i].type] = parts[i].value;
+      }
+      if (map.year && map.month && map.day) {
+        return map.year + "-" + map.month + "-" + map.day;
+      }
+    } catch (_) {
+      // Fallback below
+    }
+    return dateObj.toISOString().slice(0, 10);
+  }
+
+  function diffDaysYmd(todayYmd, targetYmd) {
+    const aParts = todayYmd.split("-").map(Number);
+    const bParts = targetYmd.split("-").map(Number);
+    if (aParts.length !== 3 || bParts.length !== 3) return NaN;
+    const utcA = Date.UTC(aParts[0], aParts[1] - 1, aParts[2]);
+    const utcB = Date.UTC(bParts[0], bParts[1] - 1, bParts[2]);
+    return Math.round((utcB - utcA) / 86400000);
   }
 
   function classifyMacroRegime(data) {
@@ -908,14 +935,14 @@
       const methods = Array.isArray(m.supportedGenerationMethods) ? m.supportedGenerationMethods : [];
       if (methods.indexOf("generateContent") === -1) continue;
       const cleanId = String(m.name || "").replace(/^models\//, "");
-      if (isCandidateSearchModel(cleanId) && discovered.indexOf(cleanId) === -1) {
+      if (isCandidateGeminiModel(cleanId) && discovered.indexOf(cleanId) === -1) {
         discovered.push(cleanId);
       }
     }
     return discovered;
   }
 
-  async function invokeGroundedModel(apiKey, modelId, promptText) {
+  async function invokeGeminiModel(apiKey, modelId, promptText, useSearchTool) {
     const endpoint =
       "https://generativelanguage.googleapis.com/v1beta/models/" +
       encodeURIComponent(modelId) +
@@ -929,15 +956,14 @@
           parts: [{ text: promptText }]
         }
       ],
-      tools: [
-        {
-          google_search: {}
-        }
-      ],
       generationConfig: {
         temperature: 0.15
       }
     };
+
+    if (useSearchTool) {
+      requestBody.tools = [{ google_search: {} }];
+    }
 
     const resp = await fetch(endpoint, {
       method: "POST",
@@ -949,7 +975,7 @@
 
     const rawText = await resp.text();
     if (!resp.ok) {
-      const err = new Error("Model " + modelId + " HTTP " + resp.status + ": " + rawText);
+      const err = new Error("Model " + modelId + (useSearchTool ? " [search]" : " [direct]") + " HTTP " + resp.status + ": " + rawText);
       err.status = resp.status;
       throw err;
     }
@@ -982,7 +1008,7 @@
     return [
       "Current date: " + todayStr + " (IST timestamp: " + istTimestamp + ").",
       "Target forecast date: " + targetDateStr + " (" + horizonDays + " days ahead).",
-      "Use Google Search right now to fetch live real-time global & Indian market data and institutional signals:",
+      "Fetch live real-time global & Indian market data and institutional signals for gold:",
       "1) Live spot XAU/USD gold price per troy oz and live USD/INR exchange rate.",
       "2) Current US Federal Reserve lending rate (target range), FOMC rate expectations/odds, US 10-year nominal Treasury yield, and US 10-year TIPS real yield.",
       "3) US Dollar Index (DXY), Brent crude oil ($/bbl), and FII/FPI equity & debt flows in India.",
@@ -1024,7 +1050,7 @@
     const spotFx = Number(data.spot_usd_inr);
 
     document.getElementById("box1Val").textContent = formatUSD(spotUsd, 2) + " / oz";
-    document.getElementById("box1Sub").textContent = "Live XAU/USD (" + meta.todayStr + ")";
+    document.getElementById("box1Sub").textContent = "XAU/USD (" + meta.todayStr + ")";
 
     document.getElementById("box2Val").textContent = data.fed_rate_text || "--";
     document.getElementById("box2Sub").textContent = data.fed_sub_text || "US Fed Funds & 10Y Nominal";
@@ -1093,14 +1119,16 @@
     }
 
     document.getElementById("mcResultCard").style.display = "block";
-    document.getElementById("telemetryStamp").textContent = "Model: " + meta.usedModel + " | " + meta.istTimestamp;
+    document.getElementById("telemetryStamp").textContent = meta.modeLabel + " (" + meta.usedModel + ") | " + meta.istTimestamp;
     document.getElementById("horizonBadge").textContent = meta.horizonDays + " Days (" + meta.todayStr + " to " + meta.targetDateStr + ")";
   }
 
   function setDefaultTargetDate() {
     const inp = document.getElementById("targetDateInput");
-    if (!inp || inp.value) return;
-    const future = new Date(Date.now() + 14 * 86400000);
+    if (!inp) return;
+    const todayIst = toYmdInTimeZone(new Date(), "Asia/Kolkata");
+    const parts = todayIst.split("-").map(Number);
+    const future = new Date(Date.UTC(parts[0], parts[1] - 1, parts[2] + 14));
     inp.value = future.toISOString().slice(0, 10);
   }
 
@@ -1158,35 +1186,33 @@
     }
 
     const now = new Date();
-    const todayStr = now.toISOString().slice(0, 10);
+    const todayStr = toYmdInTimeZone(now, "Asia/Kolkata");
     const istTimestamp = now.toLocaleString("en-IN", { timeZone: "Asia/Kolkata" }) + " IST";
-    const horizonDays = Math.round(
-      (new Date(targetDateStr + "T00:00:00") - new Date(todayStr + "T00:00:00")) / 86400000
-    );
+    const horizonDays = diffDaysYmd(todayStr, targetDateStr);
 
     if (!Number.isFinite(horizonDays) || horizonDays < 1 || horizonDays > 90) {
-      showError("Target date must be between 1 and 90 days ahead of today (" + todayStr + ").");
+      showError("Target date must be between 1 and 90 days ahead of today (" + todayStr + " IST).");
       return;
     }
 
     btn.disabled = true;
-    setStatus("Discovering available search-grounded Gemini models and fetching live market data...");
-    logDiag("Starting forecast pipeline for target date " + targetDateStr + " (" + horizonDays + " days)...");
+    setStatus("Discovering Gemini models and running grounded/fallback forecast...");
+    logDiag("Starting forecast pipeline for target date " + targetDateStr + " (" + horizonDays + "d from " + todayStr + ")...");
 
     try {
       let discovered = [];
       try {
         discovered = await discoverModels(apiKey);
-        logDiag("Discovered " + discovered.length + " candidate generateContent models.");
+        logDiag("Discovered " + discovered.length + " Gemini generateContent models.");
       } catch (listErr) {
         logDiag("Model discovery warning: " + (listErr.message || String(listErr)));
       }
 
       const queue = [];
-      const merged = PREFERRED_SEARCH_MODELS.concat(discovered);
+      const merged = PREFERRED_MODELS.concat(discovered);
       for (let i = 0; i < merged.length; i++) {
         const id = merged[i];
-        if (id && isCandidateSearchModel(id) && queue.indexOf(id) === -1) {
+        if (id && isCandidateGeminiModel(id) && queue.indexOf(id) === -1) {
           queue.push(id);
         }
       }
@@ -1194,37 +1220,64 @@
       const promptText = buildMarketPrompt(todayStr, istTimestamp, targetDateStr, horizonDays);
       let marketData = null;
       let usedModel = "";
+      let modeLabel = "Grounded Search";
       const failures = [];
 
+      // Pass 1: Try models with Google Search grounding enabled; do NOT abort on 429 so fallback models can run
       for (let i = 0; i < queue.length; i++) {
         const modelId = queue[i];
         try {
-          setStatus("Querying live web & institutional data via " + modelId + "...");
-          logDiag("Attempt " + (i + 1) + "/" + queue.length + " using model '" + modelId + "'...");
-          marketData = await invokeGroundedModel(apiKey, modelId, promptText);
+          setStatus("Querying live grounded data via " + modelId + "...");
+          logDiag("Pass 1 [search] " + (i + 1) + "/" + queue.length + ": " + modelId);
+          marketData = await invokeGeminiModel(apiKey, modelId, promptText, true);
           usedModel = modelId;
-          logDiag("Succeeded with model '" + modelId + "'.");
+          modeLabel = "Live Grounded";
+          logDiag("Succeeded with search grounding on '" + modelId + "'.");
           break;
         } catch (modelErr) {
           const msg = modelErr && modelErr.message ? modelErr.message : String(modelErr);
           failures.push(msg);
-          logDiag("Failed on '" + modelId + "': " + msg.slice(0, 220));
+          logDiag("Search failed on '" + modelId + "': " + msg.slice(0, 200));
           const code = modelErr && modelErr.status;
-          if (code === 401 || code === 403 || code === 429) {
+          if (code === 401 || code === 403) {
             throw modelErr;
           }
         }
       }
 
+      // Pass 2: If search tool hit quota/400/429 across models, try standard generateContent without search tool
       if (!marketData) {
-        throw new Error("All candidate models failed:\n" + failures.join("\n"));
+        for (let i = 0; i < queue.length; i++) {
+          const modelId = queue[i];
+          try {
+            setStatus("Trying fallback model call via " + modelId + "...");
+            logDiag("Pass 2 [direct] " + (i + 1) + "/" + queue.length + ": " + modelId);
+            marketData = await invokeGeminiModel(apiKey, modelId, promptText, false);
+            usedModel = modelId;
+            modeLabel = "Fallback Model";
+            logDiag("Succeeded in fallback mode on '" + modelId + "'.");
+            break;
+          } catch (fbErr) {
+            const msg = fbErr && fbErr.message ? fbErr.message : String(fbErr);
+            failures.push(msg);
+            logDiag("Fallback failed on '" + modelId + "': " + msg.slice(0, 200));
+            const code = fbErr && fbErr.status;
+            if (code === 401 || code === 403) {
+              throw fbErr;
+            }
+          }
+        }
+      }
+
+      if (!marketData) {
+        throw new Error("All model attempts failed (check API quota/billing at ai.dev/rate-limit):\n" + failures.slice(-4).join("\n"));
       }
 
       logDiag(classifyMacroRegime(marketData));
       const spotUsd = Number(marketData.spot_usd_oz);
       const spotFx = Number(marketData.spot_usd_inr);
       if (!Number.isFinite(spotUsd) || spotUsd <= 0 || !Number.isFinite(spotFx) || spotFx <= 0) {
-        throw new Error("Live market quote parsing returned invalid spot XAU/USD or USD/INR values.");
+        throw new Error("Market quote response had invalid spot XAU/USD or USD/INR values.");
       }
 
       const dutyRate = Number.isFinite(Number(marketData.india_duty_decimal)) ? Number(marketData.india_duty_decimal) : 0.06;
@@ -1257,10 +1310,11 @@
         dutyRate: dutyRate,
         basisInr: basisInr,
         todayInr: todayInr,
-        usedModel: usedModel
+        usedModel: usedModel,
+        modeLabel: modeLabel
       });
 
-      setStatus("Live web grounding + " + pathCount.toLocaleString("en-US") + "-path Monte Carlo forecast completed via " + usedModel + ".");
+      setStatus(modeLabel + " + " + pathCount.toLocaleString("en-US") + "-path Monte Carlo forecast completed via " + usedModel + ".");
       logDiag("Forecast rendered successfully.");
     } catch (err) {
       const errMsg = err && err.message ? err.message : String(err);
